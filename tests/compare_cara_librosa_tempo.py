@@ -22,13 +22,18 @@ from pathlib import Path
 
 def load_cara_tempo(cara_file):
     """
-    Load CARA's tempo estimation from text file.
+    Load CARA tempo estimation output and parse its parameters, results, and tempo sequence.
     
-    Args:
-        cara_file (str): Path to CARA's tempo output file
-        
+    Parameters:
+        cara_file (str): Path to a CARA tempo output text file.
+    
     Returns:
-        dict: CARA tempo results with metadata
+        dict or None: A dictionary with keys:
+            - 'params' (dict): Parsed CARA parameters such as 'start_bpm', 'std_bpm', 'max_tempo', 'ac_size', 'use_prior', 'aggregate'.
+            - 'results' (dict): Parsed result metadata such as 'length', 'frame_rate', 'confidence'.
+            - 'tempo_bpm' (numpy.ndarray): Array of parsed tempo values (BPM) in the order they appear.
+            - 'filename' (str): The input file path.
+        Returns None if the file cannot be read or parsing fails.
     """
     try:
         # Parse the header to extract parameters and results
@@ -78,14 +83,29 @@ def load_cara_tempo(cara_file):
 
 def compute_librosa_tempo(audio_file, cara_params=None):
     """
-    Compute librosa tempo estimation with parameters matching CARA.
+    Estimate tempo and related tempo features from an audio file using Librosa configured to match CARA.
     
-    Args:
-        audio_file (str): Path to audio file
-        cara_params (dict): CARA parameters to match
-        
+    Compute an onset strength envelope, run Librosa's tempo estimator with optional CARA-derived parameters (or sensible defaults), and produce a tempogram and its mean autocorrelation for analysis.
+    
+    Parameters:
+        audio_file (str): Path to the input audio file.
+        cara_params (dict, optional): Optional CARA-derived parameters to align Librosa behavior. Recognized keys:
+            - 'start_bpm' (float): center of the tempo prior (default 120.0)
+            - 'std_bpm' (float): standard deviation of the tempo prior (default 1.0)
+            - 'max_tempo' (float): maximum tempo to consider in BPM (default 320.0)
+            - 'ac_size' (float): autocorrelation window size in seconds (default 8.0)
+            - 'use_prior' (bool): whether to use the log-normal prior (default True)
+    
     Returns:
-        dict: Librosa tempo results
+        dict: A dictionary containing:
+            - 'tempo_bpm' (np.ndarray): Estimated tempo(s) in BPM from librosa.feature.tempo.
+            - 'onset_env' (np.ndarray): Onset strength envelope used for tempo estimation.
+            - 'autocorr' (np.ndarray): Mean autocorrelation across time derived from the tempogram.
+            - 'bpm_freqs' (np.ndarray): BPM frequencies corresponding to autocorr values.
+            - 'tempogram' (np.ndarray): Time-varying tempogram matrix.
+            - 'params' (dict): Actual parameters used for estimation (start_bpm, std_bpm, max_tempo, ac_size, use_prior, sr, hop_length).
+    
+    On error, the function prints a message and returns None.
     """
     try:
         # Load audio
@@ -193,14 +213,23 @@ def compute_librosa_tempo(audio_file, cara_params=None):
 
 def analyze_tempo_comparison(cara_data, librosa_data):
     """
-    Analyze tempo estimation comparison between CARA and librosa.
+    Compare CARA and Librosa tempo estimates and compute direct and octave-error difference metrics.
     
-    Args:
-        cara_data (dict): CARA tempo results
-        librosa_data (dict): Librosa tempo results
-        
+    Parameters:
+        cara_data (dict): Parsed CARA output with keys 'tempo_bpm' (array-like) and 'results' (may contain 'confidence').
+        librosa_data (dict): Librosa results containing 'tempo_bpm' (array-like).
+    
     Returns:
-        dict: Comparison metrics
+        dict: Comparison metrics including:
+            - 'cara_tempo' (float): CARA tempo used (first value or 0).
+            - 'librosa_tempo' (float): Librosa tempo used (first value).
+            - 'absolute_diff' (float): Absolute difference between CARA and Librosa tempos.
+            - 'relative_diff' (float): Absolute difference as a percentage of the Librosa tempo.
+            - 'octave_errors' (list): Entries for common octave/multiple ratios with keys
+                'ratio', 'predicted_tempo', 'absolute_diff', and 'relative_diff'.
+            - 'best_octave_match' (dict): The octave_errors entry with the smallest absolute_diff.
+            - 'is_octave_error' (bool): True if best octave match is closer than the direct difference.
+            - 'cara_confidence' (float): Confidence value from CARA results (0.0 if absent).
     """
     cara_tempo = cara_data['tempo_bpm'][0] if len(cara_data['tempo_bpm']) > 0 else 0
     librosa_tempo = librosa_data['tempo_bpm'][0]
@@ -240,13 +269,23 @@ def analyze_tempo_comparison(cara_data, librosa_data):
 
 def create_comparison_plot(cara_data, librosa_data, comparison, output_path="tempo_comparison.png"):
     """
-    Create comprehensive tempo comparison plot.
+    Create a 2x2 figure that visualizes and summarizes tempo comparison results between CARA and Librosa and save it to disk.
     
-    Args:
-        cara_data (dict): CARA tempo results
-        librosa_data (dict): Librosa tempo results
-        comparison (dict): Comparison metrics
-        output_path (str): Output plot path
+    The figure includes:
+    - A bar chart comparing CARA and Librosa tempo estimates with numeric labels.
+    - An autocorrelation vs BPM plot (when autocorrelation and BPM frequency data are available) with markers for both tempo estimates.
+    - An octave-error bar chart showing absolute differences for common tempo ratios and highlighting the best match.
+    - A textual summary panel with key metrics, octave analysis, and parameter values.
+    
+    Parameters:
+        cara_data (dict): Parsed CARA output containing at least `params`, `results`, and tempo values used for the summary.
+        librosa_data (dict): Librosa analysis output containing `tempo_bpm`, `autocorr`, `bpm_freqs`, and analysis `params`.
+        comparison (dict): Comparison metrics produced by analyze_tempo_comparison(), including `cara_tempo`, `librosa_tempo`,
+            `absolute_diff`, `relative_diff`, `octave_errors`, `best_octave_match`, `is_octave_error`, and `cara_confidence`.
+        output_path (str): File path where the generated PNG image will be written.
+    
+    Side effects:
+        Writes a PNG file to `output_path` and prints the saved file path to stdout.
     """
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
@@ -343,14 +382,21 @@ TEMPO ESTIMATION COMPARISON
 
 def print_summary_report(comparison, cara_data, librosa_data, cara_file, audio_file):
     """
-    Print comprehensive summary report.
+    Print a human-readable comparison report summarizing CARA vs Librosa tempo estimation.
     
-    Args:
-        comparison (dict): Comparison metrics
-        cara_data (dict): CARA results
-        librosa_data (dict): Librosa results
-        cara_file (str): CARA output file path
-        audio_file (str): Audio file path
+    Parameters:
+        comparison (dict): Metrics produced by analyze_tempo_comparison. Expected keys include
+            'cara_tempo', 'librosa_tempo', 'absolute_diff', 'relative_diff',
+            'best_octave_match' (dict with 'ratio', 'predicted_tempo', 'absolute_diff', 'relative_diff'),
+            'is_octave_error' (bool), and 'cara_confidence'.
+        cara_data (dict): Parsed CARA output containing at least a 'params' dict and optional 'results'.
+        librosa_data (dict): Librosa analysis results containing at least a 'params' dict.
+        cara_file (str): Path to the CARA output file to report.
+        audio_file (str): Path to the audio file used for Librosa analysis.
+    
+    This function writes a formatted summary to stdout that includes input files, tempo values,
+    absolute and relative differences, octave-error analysis, parameter comparisons, and an assessment
+    message based on relative difference thresholds.
     """
     print("\n" + "="*80)
     print("🎵 CARA vs LIBROSA TEMPO ESTIMATION COMPARISON REPORT")
@@ -403,7 +449,12 @@ def print_summary_report(comparison, cara_data, librosa_data, cara_file, audio_f
 
 def main():
     """
-    Main function to run the tempo comparison.
+    Run the end-to-end CARA vs Librosa tempo estimation comparison workflow.
+    
+    This function selects CARA and audio input paths from command-line arguments or defaults, validates inputs, loads CARA tempo results, computes Librosa tempo using matching parameters, performs a comparison analysis (including octave-error checks), generates and saves a multi-panel comparison plot to ../outputs/cara_librosa_tempo_comparison.png, writes a Librosa tempo reference file to ../outputs/librosa_tempo_reference.txt, and prints a summary report to stdout.
+    
+    Returns:
+        int: Process exit code — `0` on success, `1` on failure (e.g., missing files or processing errors).
     """
     # Parse command line arguments
     if len(sys.argv) >= 3:

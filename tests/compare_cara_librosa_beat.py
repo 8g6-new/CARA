@@ -22,13 +22,19 @@ from pathlib import Path
 
 def load_cara_beats(cara_file):
     """
-    Load CARA's beat tracking results from text file.
+    Load CARA beat-tracking output from a text file and return a structured dictionary of parameters, results, and beat arrays.
     
-    Args:
-        cara_file (str): Path to CARA's beat output file
-        
+    Parameters:
+        cara_file (str): Path to a CARA beat output text file. The file may contain header lines beginning with '#' (key:value pairs) and beat lines with "index frame time".
+    
     Returns:
-        dict: CARA beat results with metadata
+        dict or None: On success, a dictionary with keys:
+            - 'params': dict of parsed CARA parameters (e.g., 'tightness', 'trim', 'sparse').
+            - 'results': dict of parsed result fields (e.g., 'num_beats', 'tempo_bpm', 'confidence', 'frame_rate', 'total_frames').
+            - 'beat_times': numpy.ndarray of beat times in seconds.
+            - 'beat_frames': numpy.ndarray of beat frame indices.
+            - 'filename': the input file path.
+        Returns None if the file cannot be read or parsing fails.
     """
     try:
         # Parse the header to extract parameters and results
@@ -85,14 +91,19 @@ def load_cara_beats(cara_file):
 
 def compute_librosa_beats(audio_file, cara_params=None):
     """
-    Compute librosa beat tracking with parameters matching CARA.
+    Compute beat times and frames for an audio file using librosa, attempting to match provided CARA tracking parameters.
     
-    Args:
-        audio_file (str): Path to audio file
-        cara_params (dict): CARA parameters to match
-        
+    Parameters:
+        audio_file (str): Path to the audio file to analyze.
+        cara_params (dict, optional): CARA parameters to influence librosa settings; when present, `tightness` and `trim` are read and applied.
+    
     Returns:
-        dict: Librosa beat results
+        dict: A results dictionary with keys:
+            - 'tempo_bpm' (float): Estimated tempo in beats per minute.
+            - 'beat_times' (numpy.ndarray): Beat times in seconds.
+            - 'beat_frames' (numpy.ndarray): Beat frame indices (integers).
+            - 'num_beats' (int): Number of detected beats.
+            - 'params' (dict): Parameters used for computation ('tightness', 'trim', 'sr', 'hop_length').
     """
     try:
         # Load audio
@@ -154,14 +165,29 @@ def compute_librosa_beats(audio_file, cara_params=None):
 
 def analyze_beat_comparison(cara_data, librosa_data):
     """
-    Analyze beat tracking comparison between CARA and librosa.
+    Compute comparison metrics between CARA and Librosa beat-tracking results.
     
-    Args:
-        cara_data (dict): CARA beat results
-        librosa_data (dict): Librosa beat results
-        
+    Parameters:
+        cara_data (dict): CARA result dictionary containing at least 'beat_times' (array-like of times in seconds)
+            and 'results' with 'tempo_bpm'.
+        librosa_data (dict): Librosa result dictionary containing at least 'beat_times' (array-like of times in seconds)
+            and 'tempo_bpm'.
+    
     Returns:
-        dict: Comparison metrics
+        dict: Metrics describing tempo agreement and beat alignment with these keys:
+            - 'cara_tempo': CARA tempo in BPM.
+            - 'librosa_tempo': Librosa tempo in BPM.
+            - 'tempo_diff': Absolute tempo difference (BPM).
+            - 'tempo_rel_diff': Relative tempo difference as percentage of Librosa tempo.
+            - 'cara_num_beats': Number of CARA beats.
+            - 'librosa_num_beats': Number of Librosa beats.
+            - 'beat_alignment_score': Matched beats divided by the larger of the two beat counts.
+            - 'mean_beat_error': Mean absolute timing error for matched beats (seconds), or infinity if none matched.
+            - 'matched_beats': Count of CARA beats with a Librosa beat within the tolerance.
+            - 'precision': matched_beats / cara_num_beats.
+            - 'recall': matched_beats / librosa_num_beats.
+            - 'f1_score': Harmonic mean of precision and recall.
+            - 'tolerance': Time tolerance (seconds) used to consider a beat as matched (0.07).
     """
     cara_times = cara_data['beat_times']
     librosa_times = librosa_data['beat_times']
@@ -229,14 +255,23 @@ def analyze_beat_comparison(cara_data, librosa_data):
 
 def create_comparison_plot(cara_data, librosa_data, comparison, audio_file, output_path="beat_comparison.png"):
     """
-    Create comprehensive beat comparison plot.
+    Generate and save a 3x2 figure that visualizes and compares CARA and Librosa beat-tracking results.
     
-    Args:
-        cara_data (dict): CARA beat results
-        librosa_data (dict): Librosa beat results
-        comparison (dict): Comparison metrics
-        audio_file (str): Path to audio file for waveform
-        output_path (str): Output plot path
+    Parameters:
+        cara_data (dict): CARA results with keys 'beat_times' (array of seconds) and 'beat_frames'.
+        librosa_data (dict): Librosa results with keys 'beat_times' (array of seconds) and 'beat_frames'.
+        comparison (dict): Comparison metrics used for annotations and panels. Must include
+            'cara_tempo', 'librosa_tempo', 'tempo_diff', 'tempo_rel_diff', 'cara_num_beats',
+            'librosa_num_beats', 'matched_beats', 'precision', 'recall', 'f1_score',
+            'mean_beat_error', 'tolerance', and 'beat_alignment_score'.
+        audio_file (str): Path to the audio file used to draw the waveform.
+        output_path (str): File path where the PNG figure will be saved.
+    
+    Behavior:
+        Creates six subplots: waveform with beat markers, first-20-beat timing comparison,
+        beat-interval histograms, tempo bar chart, beat-alignment matrix (using the provided
+        tolerance), and a textual summary panel. The figure is saved to `output_path` and
+        a confirmation message is printed. Errors are caught and reported to stdout.
     """
     try:
         # Load audio for visualization
@@ -375,14 +410,23 @@ BEAT TRACKING COMPARISON
 
 def print_summary_report(comparison, cara_data, librosa_data, cara_file, audio_file):
     """
-    Print comprehensive summary report.
+    Prints a human-readable summary report of CARA vs Librosa beat-tracking comparison.
     
-    Args:
-        comparison (dict): Comparison metrics
-        cara_data (dict): CARA results
-        librosa_data (dict): Librosa results
-        cara_file (str): CARA output file path
-        audio_file (str): Audio file path
+    Parameters:
+        comparison (dict): Metrics produced by analyze_beat_comparison, including keys such as
+            'cara_num_beats', 'librosa_num_beats', 'cara_tempo', 'librosa_tempo',
+            'tempo_diff', 'tempo_rel_diff', 'tolerance', 'matched_beats',
+            'precision', 'recall', 'f1_score', 'mean_beat_error', and 'beat_alignment_score'.
+        cara_data (dict): Parsed CARA results dictionary (expects a 'params' sub-dictionary).
+        librosa_data (dict): Librosa results dictionary (expects a 'params' sub-dictionary).
+        cara_file (str): Path to the CARA output file shown in the report header.
+        audio_file (str): Path to the audio file shown in the report header.
+    
+    Description:
+        Outputs a formatted console report that summarizes beat counts, tempos,
+        tempo differences, alignment metrics (matched beats, precision, recall, F1,
+        mean beat error), parameter comparisons (e.g., tightness and trim), and a
+        qualitative assessment of matching quality and tempo agreement.
     """
     print("\n" + "="*80)
     print("🥁 CARA vs LIBROSA BEAT TRACKING COMPARISON REPORT")
@@ -435,7 +479,12 @@ def print_summary_report(comparison, cara_data, librosa_data, cara_file, audio_f
 
 def main():
     """
-    Main function to run the beat tracking comparison.
+    Run the end-to-end CARA vs Librosa beat-tracking comparison pipeline.
+    
+    Performs argument parsing for input CARA and audio file paths, validates files, loads CARA beat results, computes Librosa beat-tracking with matching parameters, analyzes comparison metrics, generates and saves a multi-panel comparison plot, writes a Librosa beat-reference file, and prints a human-readable summary report.
+    
+    Returns:
+        int: Exit code — `0` on success, non-zero (typically `1`) on failure.
     """
     # Parse command line arguments
     if len(sys.argv) >= 3:

@@ -26,7 +26,9 @@
  */
 
 /**
- * Find the next power of 2 greater than or equal to n.
+ * Compute the smallest power of two greater than or equal to n.
+ * @param n Input value to round up.
+ * @return The smallest power-of-two value >= n. When n is 0, returns 1.
  */
 static size_t next_power_of_2(size_t n) {
     if (n == 0) return 1;
@@ -42,6 +44,17 @@ static size_t next_power_of_2(size_t n) {
     return n + 1;
 }
 
+/**
+ * Produce a tempo_params_t populated with sensible default values for tempo estimation.
+ *
+ * @returns A tempo_params_t initialized as:
+ *          - start_bpm = 120.0f
+ *          - std_bpm = 1.0f
+ *          - max_tempo = 320.0f
+ *          - ac_size = 8.0f
+ *          - use_prior = true
+ *          - aggregate = true
+ */
 tempo_params_t get_default_tempo_params(void) {
     tempo_params_t params = {
         .start_bpm = 120.0f,
@@ -54,6 +67,20 @@ tempo_params_t get_default_tempo_params(void) {
     return params;
 }
 
+/**
+ * Compute BPM values corresponding to autocorrelation lag indices.
+ *
+ * Produces an array where each element i gives the tempo in beats per minute
+ * represented by autocorrelation lag i (index 0 is set to INFINITY).
+ *
+ * @param n_lags Number of lag values to compute (length of the returned array).
+ * @param sample_rate Audio sample rate in Hz.
+ * @param hop_length Number of audio samples between consecutive onset-envelope frames.
+ * @returns Pointer to a newly allocated array of `n_lags` floats (caller must free)
+ *          where `result[0] == INFINITY` and for `i >= 1`:
+ *          `result[i] == 60.0 * sample_rate / (hop_length * i)`. Returns `NULL`
+ *          on invalid input or allocation failure.
+ */
 float *tempo_frequencies(size_t n_lags, float sample_rate, int hop_length) {
     if (n_lags == 0 || hop_length <= 0 || sample_rate <= 0) {
         ERROR("Invalid parameters for tempo_frequencies");
@@ -78,6 +105,24 @@ float *tempo_frequencies(size_t n_lags, float sample_rate, int hop_length) {
     return bpm_freqs;
 }
 
+/**
+ * Compute the onset autocorrelation for an onset envelope using FFT-based convolution.
+ *
+ * Produces a truncated, lag-normalized autocorrelation sequence for lags [0, max_lag-1].
+ *
+ * @param onset_env Pointer to the onset envelope array (length samples).
+ * @param length Number of samples in `onset_env`.
+ * @param max_lag Maximum lag (in frames) to compute; will be clamped to `length`.
+ * @param frame_rate Frame rate of the onset envelope (frames per second) used to compute max_lag_seconds.
+ *
+ * @returns An autocorr_result_t with:
+ *   - `autocorr`: heap-allocated array of length `result.length` containing autocorrelation values normalized by lag 0 (values in [0,1]) or NULL on failure.
+ *   - `bpm_freqs`: always set to NULL (BPM frequencies are not computed here).
+ *   - `length`: actual number of lags returned (<= requested `max_lag`).
+ *   - `max_lag_seconds`: `length / frame_rate`.
+ *
+ * On invalid input or allocation/FFT failure, returns a zero-initialized result (all pointers NULL, length zero).
+ */
 autocorr_result_t compute_onset_autocorr(
     const float *onset_env,
     size_t length,
@@ -196,6 +241,25 @@ cleanup:
     return result;
 }
 
+/**
+ * Apply a log-normal tempo prior to an autocorrelation array in-place.
+ *
+ * For each lag with a finite, positive BPM in `bpm_freqs`, the function adds
+ * a log-normal prior (centered at `start_bpm` with scale `std_bpm`) to the
+ * autocorrelation value in log-space. Entries with non-finite or non-positive
+ * BPMs are set to `-INFINITY`. If parameters are invalid the function returns
+ * without modifying `autocorr`.
+ *
+ * @param autocorr In/out array of length `length` containing autocorrelation
+ *                 values expressed in linear (pre-log) form; values are updated
+ *                 in-place in log-space with the prior applied.
+ * @param bpm_freqs Array of length `length` containing BPM values corresponding
+ *                  to each autocorrelation lag; must be finite and > 0 to be
+ *                  considered valid.
+ * @param length Number of elements in `autocorr` and `bpm_freqs`.
+ * @param start_bpm Center BPM of the log-normal prior; must be > 0.
+ * @param std_bpm Standard deviation of the prior in log2 space; must be > 0.
+ */
 void apply_log_normal_prior(
     float *autocorr,
     const float *bpm_freqs,
@@ -233,6 +297,21 @@ void apply_log_normal_prior(
     }
 }
 
+/**
+ * Locate the best tempo peak index within autocorrelation values subject to a tempo limit.
+ *
+ * Scans autocorr (skipping lag 0) and considers only entries whose corresponding bpm_freqs
+ * are less than or equal to max_tempo and have finite autocorrelation; optionally writes
+ * a confidence score in [0, 1] that reflects separation between the best and second-best peaks.
+ *
+ * @param autocorr Array of autocorrelation values indexed by lag.
+ * @param bpm_freqs Array of BPM frequencies corresponding to each lag (same length as autocorr).
+ * @param length Number of elements in `autocorr` and `bpm_freqs`.
+ * @param max_tempo Maximum BPM to consider when selecting a peak.
+ * @param confidence Output pointer where a confidence value in [0, 1] will be stored; may be NULL.
+ * @returns Index of the selected lag with the highest valid autocorrelation within `max_tempo`;
+ *          returns 0 if no valid peak is found or on error.
+ */
 size_t find_tempo_peak(
     const float *autocorr,
     const float *bpm_freqs,
@@ -275,6 +354,26 @@ size_t find_tempo_peak(
     return best_idx;
 }
 
+/**
+ * Estimate the dominant tempo (beats per minute) from an onset envelope.
+ *
+ * Computes an autocorrelation of the provided onset envelope, derives BPM
+ * candidates for each lag, optionally applies a log-normal prior, and selects
+ * the best tempo peak with an associated confidence score.
+ *
+ * @param onset_env Pointer to an onset_envelope_t containing the onset strength
+ *        array, its length (number of frames), and the frame_rate (frames per second).
+ * @param params Optional pointer to tempo_params_t controlling estimation behavior;
+ *        if NULL, default tempo parameters are used.
+ * @param hop_length Number of audio samples between successive onset frames (must be > 0).
+ *
+ * @returns tempo_result_t populated with:
+ *          - `bpm_estimates`: pointer to an array of detected BPM values (length 1 on success, NULL on failure),
+ *          - `length`: number of BPM estimates (0 on failure),
+ *          - `frame_rate`: copied from `onset_env->frame_rate`,
+ *          - `is_global`: set from `params->aggregate`,
+ *          - `confidence`: confidence of the selected tempo in [0, 1].
+ */
 tempo_result_t estimate_tempo(
     const onset_envelope_t *onset_env,
     const tempo_params_t *params,
@@ -398,6 +497,14 @@ tempo_result_t estimate_tempo(
     return result;
 }
 
+/**
+ * Release resources held by a tempo_result_t and reset its fields to defaults.
+ *
+ * Frees the internal `bpm_estimates` array if present and sets `bpm_estimates` to NULL,
+ * `length` to 0, `frame_rate` to 0.0f, `is_global` to false, and `confidence` to 0.0f.
+ *
+ * @param result Pointer to the tempo_result_t to clear; no action is taken if NULL.
+ */
 void free_tempo_result(tempo_result_t *result) {
     if (result) {
         if (result->bpm_estimates) {
@@ -411,6 +518,15 @@ void free_tempo_result(tempo_result_t *result) {
     }
 }
 
+/**
+ * Deallocate and reset the contents of an autocorr_result_t in place.
+ *
+ * Frees the internal `autocorr` and `bpm_freqs` arrays if they are non-NULL,
+ * sets those pointers to NULL, and resets `length` to 0 and
+ * `max_lag_seconds` to 0.0f. Does nothing if `result` is NULL.
+ *
+ * @param result Pointer to the autocorr_result_t to clear.
+ */
 void free_autocorr_result(autocorr_result_t *result) {
     if (result) {
         if (result->autocorr) {

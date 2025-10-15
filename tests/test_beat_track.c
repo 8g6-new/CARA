@@ -19,8 +19,21 @@
 #include "utils/bench.h"
 
 /**
- * Save beat tracking results to a text file for comparison with librosa.
- */
+ * Write beat-tracking parameters and results to a human-readable text file.
+ *
+ * The file contains a header with the beat-tracking parameters and summary
+ * results (number of beats, estimated tempo, confidence, frame rate, total
+ * frames), followed by one line per beat with the beat index, frame position,
+ * and time in seconds.
+ *
+ * @param filename Path to the output text file to create or overwrite.
+ * @param beat_res Pointer to the beat_result_t containing per-beat frames/times
+ *                 and overall result metrics.
+ * @param params   Pointer to the beat_params_t describing the parameters used
+ *                 to produce the results.
+ *
+ * If the file cannot be opened for writing, the function returns without
+ * creating or modifying the file. */
 static void save_beat_results(const char *filename, const beat_result_t *beat_res, 
                              const beat_params_t *params) {
     FILE *fp = fopen(filename, "w");
@@ -51,7 +64,16 @@ static void save_beat_results(const char *filename, const beat_result_t *beat_re
 }
 
 /**
- * Save beat mask for dense output analysis.
+ * Write dense per-frame beat mask to a text file.
+ *
+ * Writes a simple ASCII file containing a header and one line per frame
+ * with the frame index and a binary beat indicator (0 or 1). The file is
+ * overwritten if it already exists. If `beat_res->beat_mask` is NULL,
+ * the function returns without creating or modifying the file.
+ *
+ * @param filename Path to the output file to write the beat mask to.
+ * @param beat_res Pointer to beat tracking results containing `beat_mask`
+ *                 and `total_frames`.
  */
 static void save_beat_mask(const char *filename, const beat_result_t *beat_res) {
     if (!beat_res->beat_mask) {
@@ -78,7 +100,15 @@ static void save_beat_mask(const char *filename, const beat_result_t *beat_res) 
 }
 
 /**
- * Print statistics about the beat tracking results.
+ * Log a formatted summary of beat-tracking parameters and results.
+ *
+ * Prints parameters (tightness, trim, sparse), result metrics (beats found, tempo,
+ * confidence, frame rate, total frames), and per-beat information. If at least one
+ * beat exists, prints first and last beat times/frames; if more than one beat,
+ * also prints total duration, average inter-beat interval, and an estimated BPM.
+ *
+ * @param beat_res Beat tracking results to summarize.
+ * @param params Parameters used for the beat-tracking run.
  */
 static void print_beat_stats(const beat_result_t *beat_res, const beat_params_t *params) {
     LOG("%s%s%s", BAR_COLOR, line, RESET);
@@ -120,7 +150,19 @@ static void print_beat_stats(const beat_result_t *beat_res, const beat_params_t 
 }
 
 /**
- * Test beat tracking with different parameter sets.
+ * Run a series of beat-tracking scenarios with varied parameters and persist results.
+ *
+ * Executes six configurations: default parameters, higher tightness (200), lower tightness (50),
+ * no trimming, dense output (saves a per-frame beat mask), and frame-based units. For each
+ * configuration the function runs beat tracking on the provided onset envelope, prints summary
+ * statistics, saves result files (and mask for the dense run) using suffixes appended to
+ * `base_output_path`, and frees all allocated beat result data.
+ *
+ * @param onset_env Onset strength envelope to use for beat tracking.
+ * @param hop_length Hop length in samples used when mapping frames to time.
+ * @param sample_rate Audio sample rate in Hz used to compute timing information.
+ * @param base_output_path Base path for output files; suffixes are appended for each test run
+ *                         (e.g., "_default.txt", "_tight.txt", "_mask.txt", "_frames.txt").
  */
 static void test_beat_variations(const onset_envelope_t *onset_env, int hop_length,
                                 float sample_rate, const char *base_output_path) {
@@ -242,7 +284,14 @@ static void test_beat_variations(const onset_envelope_t *onset_env, int hop_leng
 }
 
 /**
- * Test direct audio beat tracking.
+ * Run beat tracking directly on an in-memory audio buffer and persist results.
+ *
+ * Uses the default beat tracking parameters and computes beat timings in seconds.
+ * If results contain beats or a detected tempo, prints statistics and writes results
+ * to a file named "<base_output_path>_audio_direct.txt".
+ *
+ * @param audio Pointer to the audio_data to analyze.
+ * @param base_output_path Base path (without suffix) used to name the output file.
  */
 static void test_audio_beat_tracking(audio_data *audio, const char *base_output_path) {
     LOG("\n%s=== Testing Direct Audio Beat Tracking ===%s", BRIGHT_GREEN, RESET);
@@ -269,6 +318,17 @@ static void test_audio_beat_tracking(audio_data *audio, const char *base_output_
     free_beat_result(&beat_audio);
 }
 
+/**
+ * Run end-to-end beat tracking tests on an input audio file and save results.
+ *
+ * Performs: audio loading, STFT computation, mel spectrogram generation, conversion to dB,
+ * onset strength computation, a suite of beat-tracking variant tests, direct-audio beat tracking,
+ * benchmark reporting, and cleanup of allocated resources. Results and optional dense beat masks
+ * are written to files under the configured output base path.
+ *
+ * @returns 0 on success, non-zero on failure (e.g., audio load, STFT, mel spectrogram, or onset
+ * envelope computation failures).
+ */
 int main(int argc, char *argv[]) {
     const char *input_file = "tests/files/riad.wav";
     const char *output_base = "outputs/beat_tracking";

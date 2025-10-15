@@ -19,7 +19,14 @@
 #include "utils/bench.h"
 
 /**
- * Save tempo estimation results to a text file for comparison with librosa.
+ * Write tempo estimation results and configuration to a plain-text file for later analysis.
+ *
+ * Writes a human-readable header containing the tempo parameters and result metadata, followed
+ * by one line per estimate with the format: "estimate_index tempo_bpm".
+ *
+ * @param filename Path to the output text file to create or overwrite.
+ * @param tempo_res Pointer to the tempo_result_t containing estimates, frame rate, and metadata.
+ * @param params Pointer to the tempo_params_t whose parameter values will be recorded in the header.
  */
 static void save_tempo_results(const char *filename, const tempo_result_t *tempo_res, 
                               const tempo_params_t *params) {
@@ -53,7 +60,18 @@ static void save_tempo_results(const char *filename, const tempo_result_t *tempo
 }
 
 /**
- * Save autocorrelation data for analysis.
+ * Write autocorrelation results to a text file for external analysis.
+ *
+ * Writes a human-readable file containing per-lag autocorrelation values and
+ * optional corresponding BPM frequencies. If the file cannot be opened the
+ * function logs an error and returns without creating output.
+ *
+ * @param filename Path to the output text file to write.
+ * @param autocorr_res Pointer to the autocorrelation result containing `length`,
+ *                     `max_lag_seconds`, and the `autocorr` array.
+ * @param bpm_freqs Optional array of length `autocorr_res->length` mapping each
+ *                  lag index to a BPM frequency; pass NULL to write `0.0` for
+ *                  BPM values.
  */
 static void save_autocorr_data(const char *filename, const autocorr_result_t *autocorr_res,
                               const float *bpm_freqs) {
@@ -78,7 +96,15 @@ static void save_autocorr_data(const char *filename, const autocorr_result_t *au
 }
 
 /**
- * Print statistics about the tempo estimation.
+ * Print formatted tempo estimation parameters and derived statistics to the log.
+ *
+ * Outputs the provided tempo parameters and result summary from `tempo_res`.
+ * When `tempo_res->length` is at least 1, prints the first estimated BPM.
+ * When more than one estimate is present, also prints the BPM range (min/max)
+ * and the mean BPM across all estimates.
+ *
+ * @param tempo_res Pointer to tempo_result_t containing estimation results to report.
+ * @param params Pointer to tempo_params_t containing the parameters used for estimation.
  */
 static void print_tempo_stats(const tempo_result_t *tempo_res, const tempo_params_t *params) {
     LOG("%s%s%s", BAR_COLOR, line, RESET);
@@ -124,7 +150,15 @@ static void print_tempo_stats(const tempo_result_t *tempo_res, const tempo_param
 }
 
 /**
- * Test tempo estimation with different parameter sets.
+ * Run a suite of tempo-estimation experiments using varied parameter settings and export results.
+ *
+ * Executes five tests (default, no Bayesian prior, start BPM = 140, shorter autocorrelation window,
+ * and lower max tempo), prints statistics for each result, saves per-test result files using the
+ * provided base output path, and frees per-test resources.
+ *
+ * @param onset_env Pointer to the onset envelope used for tempo estimation.
+ * @param hop_length Number of audio samples between successive frames (hop size) used to derive frame rate.
+ * @param base_output_path Base file path (without suffix) used to construct per-test output filenames.
  */
 static void test_tempo_variations(const onset_envelope_t *onset_env, int hop_length,
                                  const char *base_output_path) {
@@ -220,6 +254,21 @@ static void test_tempo_variations(const onset_envelope_t *onset_env, int hop_len
     free_tempo_result(&tempo_low_max);
 }
 
+/**
+ * Program entry point that runs a full tempo estimation test pipeline on an input audio file and exports results for analysis.
+ *
+ * The program loads audio, computes STFT and a mel spectrogram, derives an onset strength envelope,
+ * runs multiple tempo-estimation variants (saving per-variant results), exports autocorrelation data,
+ * prints benchmark summaries, and performs cleanup of allocated resources.
+ *
+ * Optional command-line arguments:
+ *  - argv[1]: path to input audio file (default: "tests/files/riad.wav")
+ *  - argv[2]: base path for output files (default: "outputs/tempo_estimation")
+ *
+ * @param argc Number of command-line arguments.
+ * @param argv Command-line argument vector.
+ * @returns 0 on successful completion, 1 on error (for example, failure to load or process audio). 
+ */
 int main(int argc, char *argv[]) {
     const char *input_file = "tests/files/riad.wav";
     const char *output_base = "outputs/tempo_estimation";

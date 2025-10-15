@@ -18,7 +18,13 @@ static size_t find_last_beat(const float *cumscore, size_t length);
 static bool is_local_max(const float *data, size_t index, size_t length);
 
 /**
- * Get default beat tracking parameters.
+ * Return a beat_params_t initialized with library defaults.
+ *
+ * @returns A beat_params_t configured as follows:
+ *  - tightness = 100.0f
+ *  - trim = true
+ *  - sparse = true
+ *  - tempo_params = NULL (use default tempo estimation parameters)
  */
 beat_params_t get_default_beat_params(void) {
     beat_params_t params = {
@@ -31,7 +37,30 @@ beat_params_t get_default_beat_params(void) {
 }
 
 /**
- * Track beats in an audio signal using dynamic programming.
+ * Track beats in an onset envelope using a dynamic-programming beat tracker.
+ *
+ * Processes the provided onset envelope to produce beat locations and related
+ * metadata. If `tempo_bpm` is less than or equal to 0, tempo is estimated
+ * from the onset envelope using `params->tempo_params` or default tempo
+ * parameters. If `params` is NULL, default beat parameters are used. When the
+ * onset envelope contains no detected onsets, an empty result is returned with
+ * tempo, frame_rate, and total_frames populated.
+ *
+ * @param onset_env Pointer to the onset envelope and its framing information.
+ * @param tempo_bpm Specified tempo in beats per minute; when <= 0, tempo will
+ *                  be estimated from `onset_env`.
+ * @param params    Optional beat tracking parameters; when NULL, defaults are used.
+ * @param hop_length Number of samples between successive frames (used for unit conversions).
+ * @param sample_rate Audio sample rate in Hz (used for unit conversions).
+ * @param units     Desired units for beat times (frames, samples, or seconds).
+ *
+ * @returns A populated `beat_result_t` containing:
+ *          - `tempo_bpm`: the used tempo (specified or estimated),
+ *          - `confidence`: estimation confidence when tempo was estimated,
+ *          - `frame_rate` and `total_frames` copied from `onset_env`,
+ *          - `num_beats`, `beat_frames`, and `beat_times` when beats were found,
+ *          - `beat_mask` populated only if `params->sparse` is false;
+ *          an empty/zeroed `beat_result_t` is returned on invalid input or failure.
  */
 beat_result_t beat_track(
     const onset_envelope_t *onset_env,
@@ -152,8 +181,21 @@ beat_result_t beat_track(
 }
 
 /**
- * Track beats from audio signal directly.
- */
+ * Detect beats directly from raw audio and return a populated beat_result_t.
+ *
+ * Processes the provided audio buffer (STFT → mel spectrogram → onset strength)
+ * and runs the beat tracking pipeline with the given parameters.
+ *
+ * @param audio Pointer to audio_data containing samples and sample_rate.
+ * @param window_size STFT analysis window size in samples.
+ * @param hop_length Hop length between successive STFT frames in samples.
+ * @param n_mels Number of mel bands to use for the mel spectrogram.
+ * @param params Optional beat tracking parameters; pass NULL to use defaults.
+ * @param units Units for returned beat positions (frames, samples, or time).
+ * @returns A beat_result_t with detected beats, tempo estimate, frame_rate,
+ *          and allocated arrays for beat_times / beat_frames / beat_mask as
+ *          appropriate; returns an empty-initialized result on error or if no
+ *          beats are detected. */
 beat_result_t beat_track_audio(
     audio_data *audio,
     size_t window_size,
@@ -310,7 +352,23 @@ beat_result_t beat_track_audio(
 }
 
 /**
- * Core dynamic programming beat tracker.
+ * Identify beat positions in an onset strength envelope using a dynamic-programming algorithm.
+ *
+ * Given an onset strength sequence and an estimated tempo, computes a boolean mask of beat
+ * positions (one entry per frame). The function normalizes the onset envelope, scores
+ * frames for beat-likelihood, performs dynamic programming to find an optimal beat sequence,
+ * backtracks to produce beat locations, and optionally trims weak leading/trailing beats.
+ *
+ * @param onset_env Pointer to an array of onset strength values (length = num_frames).
+ * @param num_frames Number of frames in `onset_env`.
+ * @param tempo_bpm Estimated tempo in beats per minute; must be greater than 0.
+ * @param frame_rate Frame rate (frames per second) of `onset_env`; must be greater than 0.
+ * @param tightness Penalty scale controlling tempo deviation tolerance (higher = stricter).
+ * @param trim If true, remove weak leading and trailing beats from the resulting beat mask.
+ *
+ * @returns Pointer to a newly allocated boolean array of length `num_frames` where `true`
+ *          indicates a detected beat frame; returns NULL on invalid input or allocation failure.
+ *          Caller is responsible for freeing the returned array.
  */
 bool *dp_beat_tracker(
     const float *onset_env,
@@ -368,7 +426,15 @@ bool *dp_beat_tracker(
 }
 
 /**
- * Normalize onset strength envelope by standard deviation.
+ * Normalize an onset strength envelope by its sample standard deviation.
+ *
+ * If the computed standard deviation is less than or equal to zero, the input
+ * array is copied to the output unchanged.
+ *
+ * @param onset_env Input onset strength array of length `length`.
+ * @param normalized Output buffer that receives the normalized onset strengths;
+ *        must be able to hold `length` floats.
+ * @param length Number of elements in `onset_env` and `normalized`.
  */
 void normalize_onsets(
     const float *onset_env,
@@ -390,7 +456,16 @@ void normalize_onsets(
 }
 
 /**
- * Compute local score using Gaussian-weighted smoothing.
+ * Compute a Gaussian-weighted local onset score for each frame.
+ *
+ * Applies a Gaussian window centered at each frame to produce a smoothed
+ * local score from the input normalized onset envelope. The kernel width
+ * is derived from `frames_per_beat`.
+ *
+ * @param normalized_onsets Input onset values, length `length`. Must not be NULL.
+ * @param local_score Output array of length `length` receiving the per-frame scores. Must not be NULL.
+ * @param length Number of frames in the input and output arrays.
+ * @param frames_per_beat Expected number of frames per beat; controls the Gaussian kernel width and must be > 0.
  */
 void compute_local_score(
     const float *normalized_onsets,
@@ -425,7 +500,22 @@ void compute_local_score(
 }
 
 /**
- * Core dynamic programming algorithm for beat tracking.
+ * Compute cumulative beat scores and predecessor links using dynamic programming.
+ *
+ * Given an array of per-frame local scores, fills `cumscore` with the best achievable
+ * cumulative score at each frame and fills `backlink` with the index of the chosen
+ * predecessor frame for that best path (or -1 when no predecessor is chosen).
+ *
+ * @param local_score Array of length `length` containing per-frame local scores.
+ * @param backlink Output array of length `length` that will be populated with
+ *                 predecessor indices for each frame (use -1 to indicate no predecessor).
+ * @param cumscore Output array of length `length` that will be populated with the
+ *                 cumulative best score ending at each frame.
+ * @param length Number of frames (length of the arrays).
+ * @param frames_per_beat Expected number of frames between successive beats (tempo-derived).
+ * @param tightness Penalty scaling factor that controls tolerance for deviations from `frames_per_beat`.
+ *
+ * If any pointer is NULL or `length` is zero, the function returns without modifying outputs.
  */
 void beat_track_dp(
     const float *local_score,
@@ -492,7 +582,22 @@ void beat_track_dp(
 }
 
 /**
- * Reconstruct beat path from backlinks.
+ * Backtracks the DP predecessor chain to mark detected beat positions.
+ *
+ * Scans backward from the last beat index (determined from `cumscore`) and
+ * sets the corresponding entries in `beats` to `true` following the `backlink`
+ * chain until a sentinel predecessor (negative index) is reached.
+ *
+ * @param backlink Array of predecessor indices for each frame; a negative value
+ *                 indicates no predecessor. Must have length `length`.
+ * @param cumscore Array of cumulative scores per frame used to locate the
+ *                 final beat. Must have length `length`.
+ * @param beats    Output boolean array of length `length`; entries corresponding
+ *                 to backtracked beat frames are set to `true`.
+ * @param length   Number of frames / length of the input and output arrays.
+ *
+ * If `backlink`, `cumscore`, or `beats` is NULL, or `length` is zero, the
+ * function performs no action.
  */
 void dp_backtrack(
     const int *backlink,
@@ -514,7 +619,17 @@ void dp_backtrack(
 }
 
 /**
- * Remove weak leading and trailing beats.
+ * Remove weak leading and trailing detected beats from a beat mask.
+ *
+ * Computes a threshold equal to 0.5 times the root-mean-square (RMS) of
+ * `local_score` values at positions currently marked as beats, then clears
+ * beat flags at the start and end of `beats` whose `local_score` is less
+ * than or equal to that threshold. The array `beats` is modified in-place.
+ *
+ * @param local_score Array of per-frame local beat scores; must be length `length`.
+ * @param beats Boolean beat mask of length `length`; entries are updated in-place.
+ * @param length Number of frames in `local_score` and `beats`.
+ * @param trim If false, the function returns immediately without modifying `beats`.
  */
 void trim_beats(
     const float *local_score,
@@ -561,7 +676,12 @@ void trim_beats(
 }
 
 /**
- * Convert beat mask to sparse beat indices.
+ * Convert a boolean per-frame beat mask into a compact array of frame indices where beats occur.
+ *
+ * @param beat_mask Boolean array of length `length` indicating beat presence per frame.
+ * @param length Number of elements in `beat_mask`.
+ * @param beat_indices Output buffer that will be filled with the frame indices of detected beats; must have space for at least `length` entries.
+ * @returns The number of beat indices written into `beat_indices`.
  */
 size_t beats_to_indices(
     const bool *beat_mask,
@@ -581,7 +701,15 @@ size_t beats_to_indices(
 }
 
 /**
- * Convert frame indices to time or sample positions.
+ * Convert beat frame indices into frames, samples, or time values.
+ *
+ * If any pointer is NULL or `num_beats` is zero, the function returns without modifying `output`.
+ * @param frame_indices Array of beat indices expressed in frames.
+ * @param output Destination array (must have space for `num_beats` floats) to receive converted values.
+ * @param num_beats Number of beat indices to convert.
+ * @param hop_length Number of audio samples per frame (used to compute sample and time values).
+ * @param sample_rate Audio sampling rate in Hz (used to convert samples to seconds when `units` is `BEAT_UNITS_TIME`).
+ * @param units Target units for conversion: `BEAT_UNITS_FRAMES`, `BEAT_UNITS_SAMPLES`, or `BEAT_UNITS_TIME`.
  */
 void convert_beat_units(
     const size_t *frame_indices,
@@ -615,7 +743,12 @@ void convert_beat_units(
 }
 
 /**
- * Free memory allocated for a beat result structure.
+ * Release memory held by a beat_result_t and reset it to zero.
+ *
+ * Frees any allocated arrays inside the result (beat_times, beat_frames, beat_mask)
+ * and clears all fields of the structure. Passing NULL has no effect.
+ *
+ * @param result Pointer to the beat_result_t to free and reset.
  */
 void free_beat_result(beat_result_t *result) {
     if (!result) return;
@@ -630,7 +763,11 @@ void free_beat_result(beat_result_t *result) {
 // Helper function implementations
 
 /**
- * Compute standard deviation of data array.
+ * Calculate the sample standard deviation of an array of floats.
+ *
+ * @param data Pointer to the input array; may be NULL.
+ * @param length Number of elements in the array.
+ * @returns Sample standard deviation (uses division by N-1). Returns 0.0 if `data` is NULL, `length` is 0, or `length` is 1.
  */
 static float compute_std(const float *data, size_t length) {
     if (!data || length == 0) return 0.0f;
@@ -655,7 +792,11 @@ static float compute_std(const float *data, size_t length) {
 }
 
 /**
- * Compute Gaussian weight for given distance and sigma.
+ * Compute the Gaussian kernel weight for a given distance and standard deviation.
+ *
+ * @param x Distance from the Gaussian center (signed or unsigned).
+ * @param sigma Standard deviation of the Gaussian; if sigma <= 0 the function returns 0.
+ * @returns Weight in the range [0, 1], equal to 1 at x == 0 and decreasing as |x| increases; 0 if sigma <= 0.
  */
 static float gaussian_weight(float x, float sigma) {
     if (sigma <= 0.0f) return 0.0f;
@@ -663,7 +804,16 @@ static float gaussian_weight(float x, float sigma) {
 }
 
 /**
- * Find the position of the last detected beat.
+ * Locate the index of the last significant local maximum in a cumulative-score array.
+ *
+ * Scans `cumscore` for local maxima, computes the mean value of those peaks, and uses
+ * half of that mean as a threshold to find the last peak considered significant.
+ *
+ * @param cumscore Array of cumulative scores per frame.
+ * @param length Number of elements in `cumscore`.
+ * @returns Index of the last local maximum whose value is greater than or equal to
+ *          0.5 * (mean of all local-maximum values). If no peaks are found, returns
+ *          length - 1. If `cumscore` is NULL or `length` is 0, returns 0.
  */
 static size_t find_last_beat(const float *cumscore, size_t length) {
     if (!cumscore || length == 0) return 0;
@@ -696,7 +846,12 @@ static size_t find_last_beat(const float *cumscore, size_t length) {
 }
 
 /**
- * Check if a point is a local maximum.
+ * Determine whether the value at the given index is a local maximum compared to its immediate neighbors.
+ * 
+ * @param data Array of float values to inspect.
+ * @param index Index of the point to test.
+ * @param length Number of elements in `data`.
+ * @returns `true` if `data[index]` is greater than or equal to its immediate neighbor(s) (handles edges by comparing only existing neighbors), `false` otherwise.
  */
 static bool is_local_max(const float *data, size_t index, size_t length) {
     if (!data || index >= length) return false;
