@@ -362,6 +362,15 @@ tempo_result_t estimate_tempo(
         &confidence
     );
     END_TIMING("peak_finding");
+
+    // If no peak is found, best_idx will be 0, which corresponds to infinite BPM.
+    // Return an empty result to avoid downstream errors.
+    if (best_idx == 0) {
+        WARN("No reliable tempo peak found.");
+        free(bpm_freqs);
+        free_autocorr_result(&autocorr_res);
+        return result;
+    }
     
     // Allocate result
     result.bpm_estimates = (float *)malloc(sizeof(float));
