@@ -308,7 +308,7 @@ def create_comparison_plot(cara_data, librosa_data, comparison, audio_file, outp
         axes[1, 1].grid(True, alpha=0.3)
         
         # Add value labels on bars
-        for bar, tempo in zip(bars, tempos):
+        for bar, tempo in zip(bars, tempos, strict=True):
             height = bar.get_height()
             axes[1, 1].text(bar.get_x() + bar.get_width()/2., height + 1,
                            f'{tempo:.1f}', ha='center', va='bottom', fontweight='bold')
@@ -495,7 +495,7 @@ def main():
         f.write(f"# Beats: {librosa_data['num_beats']}\n")
         f.write(f"# Format: beat_index frame_position time_seconds\n")
         
-        for i, (frame, time) in enumerate(zip(librosa_data['beat_frames'], librosa_data['beat_times'])):
+        for i, (frame, time) in enumerate(zip(librosa_data['beat_frames'], librosa_data['beat_times'], strict=True)):
             f.write(f"{i} {frame} {time:.6f}\n")
     
     print(f"💾 Librosa reference saved to: {librosa_ref_path}")
