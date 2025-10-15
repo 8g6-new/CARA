@@ -192,6 +192,12 @@ beat_result_t beat_track_audio(
     // Compute mel spectrogram
     const size_t filterbank_size = stft_result.num_frequencies * (n_mels + 2);
     float *filterbank = (float *)calloc(filterbank_size, sizeof(float));
+    if (!filterbank) {
+        ERROR("Failed to allocate filterbank");
+        free_stft(&stft_result);
+        free_fft_plan(&fft_plan);
+        return result;
+    }
     
     filterbank_config_t config = get_default_filterbank_config(0.0f, audio->sample_rate / 2.0f, n_mels, audio->sample_rate, window_size);
     filter_bank_t bank = gen_filterbank(&config, filterbank);
@@ -205,6 +211,15 @@ beat_result_t beat_track_audio(
     const size_t t_len = stft_result.output_size;
     const size_t f_len = stft_result.num_frequencies;
     float *stft_power = (float *)malloc(t_len * f_len * sizeof(float));
+    if (!stft_power) {
+        ERROR("Failed to allocate stft_power");
+        free(filterbank);
+        free(bank.freq_indexs);
+        free(bank.weights);
+        free_stft(&stft_result);
+        free_fft_plan(&fft_plan);
+        return result;
+    }
     
     // Convert magnitude to power
     for (size_t i = 0; i < t_len * f_len; i++) {
@@ -226,6 +241,17 @@ beat_result_t beat_track_audio(
     
     // Transpose mel_spec from (time × mels) to (mels × time)
     float *mel_spec = (float *)malloc(n_mels * t_len * sizeof(float));
+    if (!mel_spec) {
+        ERROR("Failed to allocate mel_spec");
+        free(mel_spec_time_major);
+        free(stft_power);
+        free(filterbank);
+        free(bank.freq_indexs);
+        free(bank.weights);
+        free_stft(&stft_result);
+        free_fft_plan(&fft_plan);
+        return result;
+    }
     for (size_t t = 0; t < t_len; t++) {
         for (size_t m = 0; m < n_mels; m++) {
             float val = mel_spec_time_major[t * n_mels + m];
@@ -235,6 +261,18 @@ beat_result_t beat_track_audio(
     
     // Convert to dB
     float *mel_db = (float *)malloc(n_mels * t_len * sizeof(float));
+    if (!mel_db) {
+        ERROR("Failed to allocate mel_db");
+        free(mel_spec);
+        free(mel_spec_time_major);
+        free(stft_power);
+        free(filterbank);
+        free(bank.freq_indexs);
+        free(bank.weights);
+        free_stft(&stft_result);
+        free_fft_plan(&fft_plan);
+        return result;
+    }
     float max_val = mel_spec[0];
     for (size_t i = 1; i < n_mels * t_len; i++) {
         if (mel_spec[i] > max_val) max_val = mel_spec[i];
