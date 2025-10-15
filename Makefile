@@ -278,6 +278,7 @@ test_tempo: builtin
 	@echo "Building tempo estimation test..."
 	$(CC) $(CFLAGS) -DBUILTIN -o test_tempo $(TEST_TEMPO) $(LDFLAGS)
 	@echo "Running tempo estimation test..."
+	@mkdir -p outputs cache/FFT tests/out
 	./test_tempo
 
 # Test Beat Tracking
@@ -285,6 +286,7 @@ test_beat_track: builtin
 	@echo "Building beat tracking test..."
 	$(CC) $(CFLAGS) -DBUILTIN -o test_beat_track $(TEST_BEAT_TRACK) $(LDFLAGS)
 	@echo "Running beat tracking test..."
+	@mkdir -p outputs cache/FFT tests/out
 	./test_beat_track
 
 # Clean Build
