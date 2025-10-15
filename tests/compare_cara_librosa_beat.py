@@ -132,10 +132,11 @@ def compute_librosa_beats(audio_file, cara_params=None):
             units='frames'
         )
         
-        print(f"🎯 Librosa beats: {len(beats)} beats, tempo: {tempo.item():.2f} BPM")
+        tempo_bpm = float(tempo[0])
+        print(f"🎯 Librosa beats: {len(beats)} beats, tempo: {tempo_bpm:.2f} BPM")
         
         return {
-            'tempo_bpm': tempo.item(),
+            'tempo_bpm': tempo_bpm,
             'beat_times': beats,
             'beat_frames': beats_frames.astype(int),
             'num_beats': len(beats),
