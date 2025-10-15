@@ -67,6 +67,18 @@ TEST_ONSET = tests/test_onset.c \
              $(wildcard $(SRCDIR)/utils/*.c) \
              $(wildcard $(SRCDIR)/audio_tools/*.c)
 
+TEST_TEMPO = tests/test_tempo.c \
+             $(wildcard $(SRCDIR)/libheatmap/*.c) \
+             $(wildcard $(SRCDIR)/png_tools/*.c) \
+             $(wildcard $(SRCDIR)/utils/*.c) \
+             $(wildcard $(SRCDIR)/audio_tools/*.c)
+
+TEST_BEAT_TRACK = tests/test_beat_track.c \
+                  $(wildcard $(SRCDIR)/libheatmap/*.c) \
+                  $(wildcard $(SRCDIR)/png_tools/*.c) \
+                  $(wildcard $(SRCDIR)/utils/*.c) \
+                  $(wildcard $(SRCDIR)/audio_tools/*.c)
+
 # Color Scheme Sources
 BUILTIN_DIR    = $(SCHEMEDIR)/builtin
 OPENCV_DIR     = $(SCHEMEDIR)/opencv_like
@@ -260,7 +272,24 @@ test_onset: builtin
 	@echo "Running onset detection test..."
 	@mkdir -p outputs cache/FFT tests/out
 	./test_onset
+
+# Test Tempo Estimation
+test_tempo: builtin
+	@echo "Building tempo estimation test..."
+	$(CC) $(CFLAGS) -DBUILTIN -o test_tempo $(TEST_TEMPO) $(LDFLAGS)
+	@echo "Running tempo estimation test..."
+	@mkdir -p outputs cache/FFT tests/out
+	./test_tempo
+
+# Test Beat Tracking
+test_beat_track: builtin
+	@echo "Building beat tracking test..."
+	$(CC) $(CFLAGS) -DBUILTIN -o test_beat_track $(TEST_BEAT_TRACK) $(LDFLAGS)
+	@echo "Running beat tracking test..."
+	@mkdir -p outputs cache/FFT tests/out
+	./test_beat_track
+
 # Clean Build
 clean:
 	rm -rf $(BUILDDIR)
-	rm -f builtin opencv_like main test_onset $(LAST_TARGET_FILE)
+	rm -f builtin opencv_like main test_onset test_tempo test_beat_track $(LAST_TARGET_FILE)
